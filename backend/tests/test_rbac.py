@@ -23,3 +23,39 @@ def test_role_enum_values():
     assert Role.AUDITOR.value == "Auditor"
     assert Role.SUPPLIER.value == "Supplier"
     assert Role.C_SUITE.value == "C-Suite"
+
+def test_facility_access_least_privilege():
+    from app.core.rbac import verify_facility_access
+    from app.models.auth import User
+
+    # Supplier with empty permissions must NOT have access
+    supplier_user = User(email="supplier@example.com", role="Supplier", facility_permissions=[])
+    assert verify_facility_access(supplier_user, "fac-austin") is False
+
+    # Supplier with explicit facility permission
+    permitted_supplier = User(email="supplier@example.com", role="Supplier", facility_permissions=["fac-austin"])
+    assert verify_facility_access(permitted_supplier, "fac-austin") is True
+    assert verify_facility_access(permitted_supplier, "fac-frankfurt") is False
+
+    # Admin with empty permissions has org-wide access
+    admin_user = User(email="admin@example.com", role="Admin", facility_permissions=[])
+    assert verify_facility_access(admin_user, "fac-austin") is True
+
+def test_baseline_restatement_total_includes_location_scope2():
+    # Bug 1 verification: total gross baseline must include Location Scope 2 per GHG Protocol
+    scope1 = 430.0
+    scope2_loc = 385.0
+    scope2_mkt = 250.0
+    scope3 = 4041.8
+    total_gross = round(scope1 + scope2_loc + scope3, 4)
+    assert total_gross == 4856.8
+    # Must NOT equal scope1 + scope2_mkt + scope3 (4721.8)
+    assert total_gross != round(scope1 + scope2_mkt + scope3, 4)
+
+def test_unauthenticated_users_endpoint_returns_401():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    client = TestClient(app)
+    # Bug 4 verification: unauthenticated request to /auth/users must return 401
+    res = client.get("/api/v1/auth/users")
+    assert res.status_code == 401

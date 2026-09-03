@@ -109,11 +109,10 @@ export const CarbonPage: React.FC = () => {
 
   const handleInspectAudit = async (activityId: string) => {
     try {
-      // Find matching emission record
-      const emissionsRes = await api.get('/carbon/emissions');
-      const record = emissionsRes.data.find((r: any) => r.activity_data_id === activityId);
-      if (record) {
-        const auditRes = await api.get(`/carbon/emissions/${record.id}/audit`);
+      // Fix Bug 19: Direct targeted O(1) lookup avoiding full table download
+      const emissionRes = await api.get(`/carbon/emissions/by-activity/${activityId}`);
+      if (emissionRes.data?.id) {
+        const auditRes = await api.get(`/carbon/emissions/${emissionRes.data.id}/audit`);
         setSelectedAuditRecord(auditRes.data);
         setIsAuditModalOpen(true);
       } else {
@@ -121,6 +120,22 @@ export const CarbonPage: React.FC = () => {
       }
     } catch (err) {
       console.error('Failed to inspect audit lineage:', err);
+    }
+  };
+
+  const handleApplyRecalculation = async () => {
+    if (!selectedFactorForRecalc) return;
+    try {
+      await api.post(`/carbon/factors/${selectedFactorForRecalc.id}/apply`, {
+        emission_factor_id: selectedFactorForRecalc.id,
+        new_factor_value: newFactorValue,
+        new_version: '2024.2',
+      });
+      setIsRecalcModalOpen(false);
+      fetchFactors();
+      fetchActivities();
+    } catch (err) {
+      console.error('Failed to apply factor recalculation:', err);
     }
   };
 
@@ -667,13 +682,23 @@ export const CarbonPage: React.FC = () => {
               <span className="font-mono font-bold text-emerald-400">{recalcPreviewData.projected_total_tco2e} tCO2e</span>
             </div>
 
-            <div className="flex justify-end pt-3">
+            <div className="flex justify-end gap-2 pt-3">
               <button
+                type="button"
                 onClick={() => setIsRecalcModalOpen(false)}
                 className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium"
               >
                 Close Preview
               </button>
+              {canEdit && (
+                <button
+                  type="button"
+                  onClick={handleApplyRecalculation}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium shadow-md shadow-emerald-950"
+                >
+                  Apply & Recalculate Historical Records
+                </button>
+              )}
             </div>
           </div>
         )}

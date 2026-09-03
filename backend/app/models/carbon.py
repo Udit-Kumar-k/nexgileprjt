@@ -21,9 +21,9 @@ class EmissionFactor(Base, AuditBaseMixin):
 class ActivityData(Base, AuditBaseMixin):
     __tablename__ = "activity_data"
 
-    organization_id = Column(String(36), nullable=False, index=True)
-    entity_id = Column(String(36), nullable=False, index=True)
-    facility_id = Column(String(36), nullable=False, index=True)
+    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False, index=True)
+    entity_id = Column(String(36), ForeignKey("entities.id"), nullable=False, index=True)
+    facility_id = Column(String(36), ForeignKey("facilities.id"), nullable=False, index=True)
     
     scope = Column(Integer, nullable=False, index=True) # 1, 2, 3
     category = Column(String(100), nullable=False, index=True) # Stationary Combustion, Electricity, Business Travel, etc.
@@ -97,9 +97,9 @@ class EmissionRecord(Base, AuditBaseMixin):
     """
     __tablename__ = "emission_records"
 
-    organization_id = Column(String(36), nullable=False, index=True)
-    entity_id = Column(String(36), nullable=False, index=True)
-    facility_id = Column(String(36), nullable=False, index=True)
+    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False, index=True)
+    entity_id = Column(String(36), ForeignKey("entities.id"), nullable=False, index=True)
+    facility_id = Column(String(36), ForeignKey("facilities.id"), nullable=False, index=True)
     
     activity_data_id = Column(String(36), ForeignKey("activity_data.id"), nullable=False, index=True)
     emission_factor_id = Column(String(36), ForeignKey("emission_factors.id"), nullable=False)

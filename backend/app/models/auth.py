@@ -12,5 +12,5 @@ class User(Base, AuditBaseMixin):
     # Roles: Admin, Sustainability Manager, ESG Analyst, Auditor, Supplier, C-Suite
     
     organization_id = Column(String(36), nullable=True) # Scoped organization
-    facility_permissions = Column(JSON, default=list, nullable=False) # List of permitted facility IDs
+    facility_permissions = Column(JSON, default=list, server_default="[]", nullable=False) # List of permitted facility IDs
     is_active = Column(Boolean, default=True, nullable=False)

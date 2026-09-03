@@ -71,6 +71,19 @@ def parse_and_import_activity_csv(
                 confidence = "estimated"
                 completeness = 0.5
 
+            # Anomaly detection for bulk import (standard 30% deviation threshold)
+            recent_activities = db.query(ActivityData).filter(
+                ActivityData.facility_id == facility_id,
+                ActivityData.activity_type == activity_type,
+                ActivityData.is_deleted == False
+            ).limit(6).all()
+
+            is_anomaly = False
+            if recent_activities:
+                avg_q = sum(a.quantity for a in recent_activities) / len(recent_activities)
+                if avg_q > 0 and (abs(quantity - avg_q) / avg_q) > 0.30:
+                    is_anomaly = True
+
             activity = ActivityData(
                 organization_id=organization_id,
                 entity_id=entity_id,
@@ -86,7 +99,7 @@ def parse_and_import_activity_csv(
                 completeness_score=completeness,
                 confidence_tier=confidence,
                 validation_status="passed",
-                anomaly_flag=False,
+                anomaly_flag=is_anomaly,
                 source_document="csv_batch_upload.csv",
                 created_by=user_id
             )

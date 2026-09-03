@@ -20,7 +20,10 @@ from app.schemas.analytics import (
 from app.services.analytics_service import (
     calculate_pareto_analysis,
     project_scenario_reduction,
-    detect_anomalies
+    detect_anomalies,
+    generate_ai_recommendations,
+    simulate_monte_carlo_uncertainty,
+    generate_ai_copilot_response
 )
 
 router = APIRouter(prefix="/analytics", tags=["AI Analytics & Reduction Planning"])
@@ -192,3 +195,80 @@ def resolve_anomaly(
     rec.status = payload.status
     db.commit()
     return {"id": rec.id, "status": rec.status}
+
+@router.get("/ai/recommendations")
+def get_ai_recommendations(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """AI Technology Roadmap: returns prioritized abatement initiatives with Marginal Abatement Cost ($/tCO2e)."""
+    scope_totals = {1: 0.0, 2: 0.0, 3: 0.0}
+    actuals = db.query(
+        EmissionRecord.scope,
+        func.sum(EmissionRecord.gross_emissions_tco2e).label("total")
+    ).filter(
+        EmissionRecord.is_scenario == False,
+        EmissionRecord.is_deleted == False
+    ).group_by(EmissionRecord.scope).all()
+
+    for row in actuals:
+        if row.scope in scope_totals:
+            scope_totals[row.scope] = float(row.total or 0.0)
+
+    return generate_ai_recommendations(scope_totals)
+
+@router.get("/ai/monte-carlo")
+def get_monte_carlo_simulation(
+    iterations: int = 500,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Monte Carlo uncertainty sensitivity analysis across GHG Protocol emission factor bounds."""
+    scope_totals = {1: 0.0, 2: 0.0, 3: 0.0}
+    actuals = db.query(
+        EmissionRecord.scope,
+        func.sum(EmissionRecord.gross_emissions_tco2e).label("total")
+    ).filter(
+        EmissionRecord.is_scenario == False,
+        EmissionRecord.is_deleted == False
+    ).group_by(EmissionRecord.scope).all()
+
+    for row in actuals:
+        if row.scope in scope_totals:
+            scope_totals[row.scope] = float(row.total or 0.0)
+
+    return simulate_monte_carlo_uncertainty(scope_totals, iterations)
+
+@router.post("/ai/copilot-chat")
+def ai_copilot_chat(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Interactive AI Environmental Intelligence Assistant grounded in real corporate carbon ledger actuals."""
+    prompt = payload.get("prompt", "")
+    
+    scope_totals = {1: 0.0, 2: 0.0, 3: 0.0}
+    actuals = db.query(
+        EmissionRecord.scope,
+        func.sum(EmissionRecord.gross_emissions_tco2e).label("total")
+    ).filter(
+        EmissionRecord.is_scenario == False,
+        EmissionRecord.is_deleted == False
+    ).group_by(EmissionRecord.scope).all()
+
+    for row in actuals:
+        if row.scope in scope_totals:
+            scope_totals[row.scope] = float(row.total or 0.0)
+
+    total_gross = sum(scope_totals.values())
+    context = {
+        "total_gross": total_gross,
+        "scope1": scope_totals[1],
+        "scope2": scope_totals[2],
+        "scope3": scope_totals[3],
+        "user_role": current_user.role,
+        "organization_id": current_user.organization_id
+    }
+
+    return generate_ai_copilot_response(prompt, context)

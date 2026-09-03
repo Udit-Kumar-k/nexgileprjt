@@ -95,3 +95,15 @@ def test_scope3_spend_based():
     assert res["gross_emissions_tco2e"] == 70.0
     assert res["uncertainty_min_tco2e"] == pytest.approx(59.5, 0.01)
     assert res["uncertainty_max_tco2e"] == pytest.approx(80.5, 0.01)
+
+def test_scope3_freight_unit_conversion():
+    from app.services.calc_engine import calculate_scope3_freight
+    # 5,000 ton-km with freight factor 0.000105 tCO2e/t-km
+    res = calculate_scope3_freight(
+        ton_km=5000.0,
+        freight_factor=0.000105,
+        factor_denominator="t-km",
+        unit="t-km"
+    )
+    assert pytest.approx(res["gross_emissions_tco2e"], 0.0001) == 0.525
+    assert "5000.0 t-km" in res["formula_string"]

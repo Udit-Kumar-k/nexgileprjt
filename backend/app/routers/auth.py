@@ -31,25 +31,38 @@ def get_me(current_user: User = Depends(get_current_user)):
     return UserResponse.model_validate(current_user)
 
 @router.get("/users", response_model=List[UserResponse])
-def list_demo_users(db: Session = Depends(get_db)):
-    """Returns available users across all roles for quick demo switching in UI."""
+def list_demo_users(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Returns available users for role switching in UI (Requires authenticated session)."""
     users = db.query(User).filter(User.is_deleted == False).all()
     return [UserResponse.model_validate(u) for u in users]
 
 @router.post("/switch-role", response_model=TokenResponse)
-def switch_role(payload: RoleSwitchRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Demo helper: switch active role for current user session without needing to re-login."""
+def switch_role(payload: RoleSwitchRequest, current_user: User = Depends(get_current_user)):
+    """Demo helper: switch active role for current user session without mutating database."""
     valid_roles = ["Admin", "Sustainability Manager", "ESG Analyst", "Auditor", "Supplier", "C-Suite"]
     if payload.role not in valid_roles:
         raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of {valid_roles}")
     
-    current_user.role = payload.role
-    db.commit()
-    db.refresh(current_user)
-    
-    access_token = create_access_token(subject=current_user.id, role=current_user.role, org_id=current_user.organization_id)
+    # Issue temporary session token with switched role in JWT claims - DO NOT mutate DB!
+    access_token = create_access_token(
+        subject=current_user.id,
+        role=payload.role,
+        org_id=current_user.organization_id
+    )
+
+    user_data = UserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        full_name=current_user.full_name,
+        role=payload.role,
+        organization_id=current_user.organization_id,
+        facility_permissions=current_user.facility_permissions,
+        is_active=current_user.is_active,
+        created_at=current_user.created_at
+    )
+
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
-        user=UserResponse.model_validate(current_user)
+        user=user_data
     )

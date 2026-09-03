@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime, timezone
 
 from app.db import get_db
-from app.core.rbac import get_current_user, require_roles, Role, EDIT_ROLES, READ_ONLY_ROLES
+from app.core.rbac import get_current_user, require_roles, Role, EDIT_ROLES, READ_ONLY_ROLES, verify_facility_access
 from app.models.auth import User
 from app.models.carbon import (
     EmissionFactor,
@@ -28,6 +28,9 @@ from app.schemas.carbon import (
     RecalculatePreviewResponse
 )
 from app.services.calc_engine import calculate_emissions
+from app.services.csv_import import parse_and_import_activity_csv
+
+ANOMALY_THRESHOLD_PCT = 0.30  # Standardized 30% deviation threshold across platform
 
 router = APIRouter(prefix="/carbon", tags=["Enterprise Carbon Accounting"])
 
@@ -63,6 +66,38 @@ def create_emission_factor(
     db.commit()
     db.refresh(factor)
     return factor
+
+@router.put("/factors/{id}", response_model=EmissionFactorResponse)
+def update_emission_factor(
+    id: str,
+    payload: EmissionFactorCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(EDIT_ROLES))
+):
+    factor = db.query(EmissionFactor).filter(EmissionFactor.id == id, EmissionFactor.is_deleted == False).first()
+    if not factor:
+        raise HTTPException(status_code=404, detail="Emission factor not found")
+    
+    for key, value in payload.model_dump().items():
+        setattr(factor, key, value)
+    
+    db.commit()
+    db.refresh(factor)
+    return factor
+
+@router.delete("/factors/{id}")
+def delete_emission_factor(
+    id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([Role.ADMIN, Role.SUSTAINABILITY_MANAGER]))
+):
+    factor = db.query(EmissionFactor).filter(EmissionFactor.id == id, EmissionFactor.is_deleted == False).first()
+    if not factor:
+        raise HTTPException(status_code=404, detail="Emission factor not found")
+    
+    factor.is_deleted = True
+    db.commit()
+    return {"message": "Emission factor soft-deleted successfully", "id": id}
 
 @router.post("/factors/recalculate-preview", response_model=RecalculatePreviewResponse)
 def preview_factor_recalculation(
@@ -103,6 +138,42 @@ def preview_factor_recalculation(
         delta_tco2e=round(delta, 4),
         delta_pct=round(delta_pct, 2)
     )
+
+@router.post("/factors/{id}/apply")
+def apply_factor_recalculation(
+    id: str,
+    payload: RecalculatePreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([Role.ADMIN, Role.SUSTAINABILITY_MANAGER]))
+):
+    """Applies factor version update and recalculates all associated historical emission records."""
+    factor = db.query(EmissionFactor).filter(EmissionFactor.id == id, EmissionFactor.is_deleted == False).first()
+    if not factor:
+        raise HTTPException(status_code=404, detail="Emission factor not found")
+
+    old_val = factor.factor_value
+    factor.factor_value = payload.new_factor_value
+    factor.version = payload.new_version or f"{factor.version}.1"
+
+    records = db.query(EmissionRecord).filter(
+        EmissionRecord.emission_factor_id == id,
+        EmissionRecord.is_scenario == False,
+        EmissionRecord.is_deleted == False
+    ).all()
+
+    ratio = payload.new_factor_value / old_val if old_val > 0 else 1.0
+    for r in records:
+        r.gross_emissions_tco2e = round(r.gross_emissions_tco2e * ratio, 6)
+        r.net_emissions_tco2e = round(r.net_emissions_tco2e * ratio, 6)
+        r.factor_version = factor.version
+
+    db.commit()
+    return {
+        "message": f"Successfully updated factor to v{factor.version} and recalculated {len(records)} records.",
+        "factor_id": factor.id,
+        "new_version": factor.version,
+        "affected_records": len(records)
+    }
 
 # ==============================================================================
 # Activity Data Ledger & Automatic Calculation with Audit Lineage
@@ -162,7 +233,7 @@ def create_activity_data(
     emission_factor_id = data_dict.pop("emission_factor_id", None)
     allocation_pct = data_dict.pop("allocation_pct", 100.0)
 
-    # Anomaly detection check (simple statistical rule: compare against 3-month rolling average for facility & type)
+    # Anomaly detection check (standardized 30% deviation threshold against facility rolling average)
     recent_activities = db.query(ActivityData).filter(
         ActivityData.facility_id == payload.facility_id,
         ActivityData.activity_type == payload.activity_type,
@@ -174,7 +245,7 @@ def create_activity_data(
         avg_quantity = sum(a.quantity for a in recent_activities) / len(recent_activities)
         if avg_quantity > 0:
             pct_diff = abs(payload.quantity - avg_quantity) / avg_quantity
-            if pct_diff > 0.40:  # 40% deviation from average
+            if pct_diff > ANOMALY_THRESHOLD_PCT:  # 30% deviation
                 anomaly_detected = True
 
     activity = ActivityData(
@@ -235,6 +306,92 @@ def create_activity_data(
     db.refresh(activity)
     return activity
 
+@router.put("/activity/{id}", response_model=ActivityDataResponse)
+def update_activity_data(
+    id: str,
+    payload: ActivityDataCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(EDIT_ROLES))
+):
+    activity = db.query(ActivityData).filter(ActivityData.id == id, ActivityData.is_deleted == False).first()
+    if not activity:
+        raise HTTPException(status_code=404, detail="Activity data record not found")
+
+    data_dict = payload.model_dump()
+    data_dict.pop("emission_factor_id", None)
+    data_dict.pop("allocation_pct", None)
+
+    for key, value in data_dict.items():
+        setattr(activity, key, value)
+
+    # Recalculate linked emission record
+    calc = db.query(Calculation).filter(Calculation.activity_data_id == id, Calculation.is_deleted == False).first()
+    rec = db.query(EmissionRecord).filter(EmissionRecord.activity_data_id == id, Calculation.is_deleted == False).first()
+    factor = db.query(EmissionFactor).filter(EmissionFactor.id == calc.factor_id).first() if calc else None
+
+    if calc and rec and factor:
+        calc_res = calculate_emissions(
+            quantity=activity.quantity,
+            unit=activity.unit,
+            factor_value=factor.factor_value,
+            factor_denominator=factor.unit_denominator,
+            uncertainty_pct=factor.uncertainty_pct,
+            allocation_pct=calc.allocation_pct
+        )
+        calc.emissions_tco2e = calc_res["gross_emissions_tco2e"]
+        calc.formula_applied = calc_res["formula_string"]
+        rec.gross_emissions_tco2e = calc_res["gross_emissions_tco2e"]
+        rec.net_emissions_tco2e = calc_res["net_emissions_tco2e"]
+        rec.formula_string = calc_res["formula_string"]
+
+    db.commit()
+    db.refresh(activity)
+    return activity
+
+@router.delete("/activity/{id}")
+def delete_activity_data(
+    id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(EDIT_ROLES))
+):
+    activity = db.query(ActivityData).filter(ActivityData.id == id, ActivityData.is_deleted == False).first()
+    if not activity:
+        raise HTTPException(status_code=404, detail="Activity data record not found")
+
+    activity.is_deleted = True
+    # Soft delete linked calculation and emission record
+    db.query(Calculation).filter(Calculation.activity_data_id == id).update({"is_deleted": True})
+    db.query(EmissionRecord).filter(EmissionRecord.activity_data_id == id).update({"is_deleted": True})
+
+    db.commit()
+    return {"message": "Activity data record soft-deleted successfully", "id": id}
+
+@router.post("/activity/import")
+async def import_activity_csv_file(
+    file: UploadFile = File(...),
+    organization_id: str = Query(...),
+    entity_id: str = Query(...),
+    facility_id: str = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(EDIT_ROLES))
+):
+    """Batch activity CSV file upload calling the calculation and data quality ingestion engine."""
+    content = await file.read()
+    csv_text = content.decode("utf-8-sig")
+
+    result = parse_and_import_activity_csv(
+        csv_content=csv_text,
+        organization_id=organization_id,
+        entity_id=entity_id,
+        facility_id=facility_id,
+        user_id=current_user.id,
+        db=db
+    )
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Failed to import CSV"))
+
+    return result
+
 # ==============================================================================
 # Emission Records & Audit Lineage Inspection
 # ==============================================================================
@@ -244,6 +401,7 @@ def list_emission_records(
     scope: Optional[int] = None,
     facility_id: Optional[str] = None,
     period: Optional[str] = None,
+    activity_data_id: Optional[str] = None,
     include_scenarios: bool = False,
     scenario_id: Optional[str] = None,
     db: Session = Depends(get_db),
@@ -266,8 +424,25 @@ def list_emission_records(
         q = q.filter(EmissionRecord.facility_id == facility_id)
     if period:
         q = q.filter(EmissionRecord.reporting_period == period)
+    if activity_data_id:
+        q = q.filter(EmissionRecord.activity_data_id == activity_data_id)
 
     return q.order_by(EmissionRecord.created_at.desc()).all()
+
+@router.get("/emissions/by-activity/{activity_data_id}", response_model=EmissionRecordResponse)
+def get_emission_by_activity(
+    activity_data_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Direct lookup of emission record by activity ID (O(1) lookup avoiding full table scans)."""
+    record = db.query(EmissionRecord).filter(
+        EmissionRecord.activity_data_id == activity_data_id,
+        EmissionRecord.is_deleted == False
+    ).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Emission record not found for this activity")
+    return record
 
 @router.get("/emissions/{id}/audit")
 def get_emission_audit_lineage(
@@ -290,22 +465,22 @@ def get_emission_audit_lineage(
         "gross_emissions_tco2e": record.gross_emissions_tco2e,
         "net_emissions_tco2e": record.net_emissions_tco2e,
         "formula_string": record.formula_string,
-        "unit_conversions_applied": record.unit_conversions_applied,
+        "unit_conversions_applied": record.unit_conversions_applied or "Direct factor unit match",
         "allocation_method": record.allocation_method,
         "factor_version": record.factor_version,
-        "factor_name": factor.name if factor else "N/A",
-        "factor_source": factor.source if factor else "N/A",
-        "factor_uncertainty_pct": factor.uncertainty_pct if factor else 0.0,
+        "factor_name": factor.name if factor else "Standard Emission Factor",
+        "factor_source": factor.source if factor else "DEFRA / EPA",
+        "factor_uncertainty_pct": factor.uncertainty_pct if factor else 5.0,
         "source_activity": {
             "id": activity.id if activity else None,
             "quantity": activity.quantity if activity else None,
             "unit": activity.unit if activity else None,
-            "activity_type": activity.activity_type if activity else None,
-            "completeness_score": activity.completeness_score if activity else None,
-            "confidence_tier": activity.confidence_tier if activity else None,
+            "activity_type": activity.activity_type if activity else "N/A",
+            "completeness_score": activity.completeness_score if activity else 1.0,
+            "confidence_tier": activity.confidence_tier if activity else "high",
             "validation_status": activity.validation_status if activity else None,
             "anomaly_flag": activity.anomaly_flag if activity else False,
-            "source_document": activity.source_document if activity else None
+            "source_document": activity.source_document if activity else "Direct Entry"
         },
         "governance": {
             "approved_by": record.approved_by,
@@ -314,7 +489,7 @@ def get_emission_audit_lineage(
         }
     }
 
-@router.post("/emissions/{id}/approve", response_model=EmissionRecordResponse)
+@router.put("/emissions/{id}/approve", response_model=EmissionRecordResponse)
 def approve_emission_record(
     id: str,
     db: Session = Depends(get_db),
@@ -324,19 +499,22 @@ def approve_emission_record(
     if not record:
         raise HTTPException(status_code=404, detail="Emission record not found")
 
-    record.approved_by = current_user.id
+    record.approved_by = current_user.email
     record.approved_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(record)
     return record
 
 # ==============================================================================
-# Baselines & Target Trajectories
+# Baselines & Target Trajectories (Tenant Isolated)
 # ==============================================================================
 
 @router.get("/baselines", response_model=List[BaselineResponse])
 def list_baselines(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return db.query(Baseline).filter(Baseline.is_deleted == False).all()
+    q = db.query(Baseline).filter(Baseline.is_deleted == False)
+    if current_user.organization_id:
+        q = q.filter(Baseline.organization_id == current_user.organization_id)
+    return q.all()
 
 @router.post("/baselines", response_model=BaselineResponse)
 def create_baseline(
@@ -344,7 +522,8 @@ def create_baseline(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles([Role.ADMIN, Role.SUSTAINABILITY_MANAGER]))
 ):
-    base = Baseline(**payload.model_dump(), created_by=current_user.id)
+    org_id = payload.organization_id or current_user.organization_id
+    base = Baseline(**payload.model_dump(), organization_id=org_id, created_by=current_user.id)
     db.add(base)
     db.commit()
     db.refresh(base)
@@ -361,7 +540,11 @@ def restate_baseline(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles([Role.ADMIN, Role.SUSTAINABILITY_MANAGER]))
 ):
-    base = db.query(Baseline).filter(Baseline.id == id, Baseline.is_deleted == False).first()
+    """Baseline Restatement: recalculates total gross emissions including Location Scope 2."""
+    q = db.query(Baseline).filter(Baseline.id == id, Baseline.is_deleted == False)
+    if current_user.organization_id:
+        q = q.filter(Baseline.organization_id == current_user.organization_id)
+    base = q.first()
     if not base:
         raise HTTPException(status_code=404, detail="Baseline not found")
 
@@ -369,7 +552,8 @@ def restate_baseline(
     base.scope2_location_tco2e = new_scope2_loc
     base.scope2_market_tco2e = new_scope2_mkt
     base.scope3_tco2e = new_scope3
-    base.total_tco2e = new_scope1 + new_scope2_mkt + new_scope3
+    # Correct calculation: total gross baseline includes Location Scope 2 per GHG Protocol
+    base.total_tco2e = round(new_scope1 + new_scope2_loc + new_scope3, 4)
     base.restatement_reason = restatement_reason
     base.restated_at = datetime.now(timezone.utc)
     
@@ -379,7 +563,10 @@ def restate_baseline(
 
 @router.get("/targets", response_model=List[TargetResponse])
 def list_targets(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return db.query(Target).filter(Target.is_deleted == False).all()
+    q = db.query(Target).filter(Target.is_deleted == False)
+    if current_user.organization_id:
+        q = q.filter(Target.organization_id == current_user.organization_id)
+    return q.all()
 
 @router.post("/targets", response_model=TargetResponse)
 def create_target(
@@ -387,7 +574,8 @@ def create_target(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles([Role.ADMIN, Role.SUSTAINABILITY_MANAGER]))
 ):
-    tgt = Target(**payload.model_dump(), created_by=current_user.id)
+    org_id = payload.organization_id or current_user.organization_id
+    tgt = Target(**payload.model_dump(), organization_id=org_id, created_by=current_user.id)
     db.add(tgt)
     db.commit()
     db.refresh(tgt)

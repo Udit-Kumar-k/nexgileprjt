@@ -240,16 +240,18 @@ def calculate_scope3_freight(
     ton_km: float,
     freight_factor: float,
     factor_denominator: str = "t-km",
+    unit: str = "t-km",
     uncertainty_pct: float = 8.0,
     allocation_pct: float = 100.0
 ) -> Dict[str, Any]:
-    return calculate_emissions(ton_km, factor_denominator, freight_factor, factor_denominator, uncertainty_pct, allocation_pct)
+    return calculate_emissions(ton_km, unit, freight_factor, factor_denominator, uncertainty_pct, allocation_pct)
 
 def calculate_scope3_business_travel(
     passenger_km: float,
     travel_factor: float,
     factor_denominator: str = "p-km",
+    unit: str = "p-km",
     uncertainty_pct: float = 10.0,
     allocation_pct: float = 100.0
 ) -> Dict[str, Any]:
-    return calculate_emissions(passenger_km, factor_denominator, travel_factor, factor_denominator, uncertainty_pct, allocation_pct)
+    return calculate_emissions(passenger_km, unit, travel_factor, factor_denominator, uncertainty_pct, allocation_pct)

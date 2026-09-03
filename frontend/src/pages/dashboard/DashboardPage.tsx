@@ -29,6 +29,7 @@ import { Badge } from '../../components/ui/Badge';
 export const DashboardPage: React.FC = () => {
   const [data, setData] = useState<any>(null);
   const [drilldown, setDrilldown] = useState<any>(null);
+  const [carbonFinance, setCarbonFinance] = useState<any>(null);
   const [entities, setEntities] = useState<any[]>([]);
   const [facilities, setFacilities] = useState<any[]>([]);
   
@@ -51,8 +52,12 @@ export const DashboardPage: React.FC = () => {
 
   const fetchExecutiveData = async () => {
     try {
-      const res = await api.get('/dashboard/executive');
-      setData(res.data);
+      const [execRes, finRes] = await Promise.all([
+        api.get('/dashboard/executive'),
+        api.get('/dashboard/carbon-finance'),
+      ]);
+      setData(execRes.data);
+      setCarbonFinance(finRes.data);
     } catch (err) {
       console.error('Failed to load executive KPIs:', err);
     } finally {
@@ -301,6 +306,10 @@ export const DashboardPage: React.FC = () => {
               <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
               <span>{peer_benchmark.percentile_rank}</span>
             </div>
+
+            <div className="mt-4 p-2.5 rounded-lg bg-amber-950/40 border border-amber-800/40 text-[11px] text-amber-300/90 leading-relaxed">
+              ⚠️ <strong>Simulated Cohort Disclaimer:</strong> Industry benchmarks represent modeled peer percentiles from public disclosures, not verified external audit data.
+            </div>
           </div>
 
           <div className="text-[10px] text-slate-500 pt-4 border-t border-slate-800">
@@ -308,6 +317,91 @@ export const DashboardPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Carbon Finance & Offset Registry (Spec Requirement 3.E) */}
+      {carbonFinance && (
+        <div className="glass-panel p-6 rounded-2xl space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-white tracking-wide">
+                  Carbon Finance, Shadow Pricing & Offset Registry
+                </h2>
+                <Badge variant="success">TCFD Aligned</Badge>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Internal carbon fee of ${carbonFinance.internal_carbon_pricing.price_per_tco2e_usd}/tCO2e applied across balance sheet operations.
+              </p>
+            </div>
+
+            <div className="text-right">
+              <span className="text-[10px] text-slate-400 uppercase font-bold">Total Carbon Liability</span>
+              <div className="text-xl font-bold font-mono text-emerald-400">
+                ${carbonFinance.internal_carbon_pricing.total_liability_usd.toLocaleString()}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+            <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2">
+              <span className="text-slate-400 font-semibold">Scope 1 Direct Liability:</span>
+              <div className="text-lg font-bold font-mono text-white">
+                ${carbonFinance.internal_carbon_pricing.scope1_liability_usd.toLocaleString()}
+              </div>
+              <div className="text-[11px] text-slate-500">Fleet & Stationary combustion shadow cost</div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2">
+              <span className="text-slate-400 font-semibold">Scope 2 Electricity Liability:</span>
+              <div className="text-lg font-bold font-mono text-white">
+                ${carbonFinance.internal_carbon_pricing.scope2_liability_usd.toLocaleString()}
+              </div>
+              <div className="text-[11px] text-slate-500">Market-based net residual grid tariffs</div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2">
+              <span className="text-slate-400 font-semibold">Scope 3 Value Chain Liability:</span>
+              <div className="text-lg font-bold font-mono text-white">
+                ${carbonFinance.internal_carbon_pricing.scope3_liability_usd.toLocaleString()}
+              </div>
+              <div className="text-[11px] text-slate-500">Purchased goods & logistics exposure</div>
+            </div>
+          </div>
+
+          {/* Verified Carbon Offsets Registry Table */}
+          <div className="space-y-3 pt-2">
+            <span className="text-xs font-bold text-white uppercase tracking-wider">
+              Verified Carbon Credit / Offset Registry (Residual Neutrality)
+            </span>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-950 text-slate-400 uppercase font-semibold border-b border-slate-800">
+                  <tr>
+                    <th className="p-2.5">Project Name</th>
+                    <th className="p-2.5">Standard & Vintage</th>
+                    <th className="p-2.5">Volume (tCO2e)</th>
+                    <th className="p-2.5">Price ($/t)</th>
+                    <th className="p-2.5">Status</th>
+                    <th className="p-2.5 text-right">Retirement Serial</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/70 text-slate-300">
+                  {carbonFinance.offset_registry.map((off: any) => (
+                    <tr key={off.id} className="hover:bg-slate-800/30">
+                      <td className="p-2.5 font-medium text-white">{off.project_name}</td>
+                      <td className="p-2.5">{off.standard} ({off.vintage})</td>
+                      <td className="p-2.5 font-mono text-emerald-400 font-bold">{off.volume_tco2e} t</td>
+                      <td className="p-2.5 font-mono">${off.price_usd_per_t}</td>
+                      <td className="p-2.5"><Badge variant="success">{off.retirement_status}</Badge></td>
+                      <td className="p-2.5 font-mono text-slate-400 text-right text-[11px]">{off.serial_number}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Operational Drill-down Section */}
       <div className="glass-panel p-6 rounded-2xl space-y-6">
@@ -378,8 +472,9 @@ export const DashboardPage: React.FC = () => {
               className="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
             >
               <option value="">All Periods</option>
-              <option value="2024-Q1">2024-Q1</option>
-              <option value="2024-Q2">2024-Q2</option>
+              {['2023-Q1', '2023-Q2', '2023-Q3', '2023-Q4', '2024-Q1', '2024-Q2', '2024-Q3', '2024-Q4', '2025-Q1', '2025-Q2'].map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
             </select>
           </div>
         </div>

@@ -30,12 +30,23 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
   return <>{children}</>;
 };
 
+const RoleDefaultRedirect: React.FC = () => {
+  const { user } = useAuthStore();
+  if (user?.role === 'Supplier') {
+    return <Navigate to="/supplier" replace />;
+  }
+  return <Navigate to="/dashboard" replace />;
+};
+
 export const App: React.FC = () => {
   const { initializeAuth } = useAuthStore();
 
   useEffect(() => {
     initializeAuth();
   }, [initializeAuth]);
+
+  const { user } = useAuthStore();
+  const isSupplier = user?.role === 'Supplier';
 
   return (
     <BrowserRouter>
@@ -50,8 +61,11 @@ export const App: React.FC = () => {
             </ProtectedRoute>
           }
         >
-          <Route index element={<Navigate to="/dashboard" replace />} />
-          <Route path="dashboard" element={<DashboardPage />} />
+          <Route index element={<RoleDefaultRedirect />} />
+          <Route
+            path="dashboard"
+            element={isSupplier ? <Navigate to="/supplier" replace /> : <DashboardPage />}
+          />
           <Route path="organization" element={<OrganizationPage />} />
           <Route path="carbon" element={<CarbonPage />} />
           <Route path="pcf" element={<PCFPage />} />

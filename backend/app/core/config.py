@@ -16,13 +16,19 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""
     
     # Security
-    SECRET_KEY: str = "nexgile-decarbx-audit-grade-super-secret-key-change-in-production-2025"
+    SECRET_KEY: str = ""
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
     
     # Environment & CORS
     ENVIRONMENT: str = "development"
-    CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173"
+    CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
+
+    def model_post_init(self, __context):
+        if not self.SECRET_KEY:
+            if self.ENVIRONMENT == "production":
+                raise ValueError("CRITICAL SECURITY ERROR: SECRET_KEY environment variable must be set in production!")
+            self.SECRET_KEY = "nexgile-decarbx-development-only-secret-key-do-not-use-in-production"
 
     @property
     def cors_origin_list(self) -> List[str]:

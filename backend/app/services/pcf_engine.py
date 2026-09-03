@@ -111,7 +111,22 @@ def calculate_pcf(
 
     # 4. Logistics Stage
     logistics_kgco2e = 0.0
-    total_weight_kg = sum(float(b.get("quantity", 0.0)) for b in boms) or 1.0
+    product_weight_kg = float(product.get("unit_weight_kg") or 0.0)
+    if product_weight_kg > 0:
+        total_weight_kg = product_weight_kg
+    else:
+        bom_weight = 0.0
+        for b in boms:
+            q = float(b.get("quantity", 0.0))
+            u = str(b.get("unit", "kg")).lower()
+            if u in ["g", "grams"]:
+                bom_weight += q / 1000.0
+            elif u in ["t", "tonne", "tonnes"]:
+                bom_weight += q * 1000.0
+            else:
+                bom_weight += q
+        total_weight_kg = bom_weight or 1.0
+
     total_weight_tonnes = total_weight_kg / 1000.0
 
     for route in routes:

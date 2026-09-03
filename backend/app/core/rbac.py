@@ -48,6 +48,11 @@ def get_current_user(token: Optional[str] = Depends(oauth2_scheme), db: Session 
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",
         )
+    # Respect temporary demo session role from JWT claims in memory (non-mutating)
+    token_role = payload.get("role")
+    if token_role:
+        user.role = token_role
+
     return user
 
 def require_roles(allowed_roles: List[Role | str]):
@@ -65,9 +70,25 @@ def require_roles(allowed_roles: List[Role | str]):
     return role_checker
 
 def verify_facility_access(current_user: User, facility_id: str) -> bool:
-    """Verifies tenant/facility segregation."""
-    if current_user.role == Role.ADMIN.value:
+    """Verifies tenant/facility segregation using least-privilege principles."""
+    if current_user.role in [Role.ADMIN.value, Role.SUSTAINABILITY_MANAGER.value]:
         return True
+    
+    # Scoped roles (Supplier, Auditor) with empty permissions get zero facility access
+    if current_user.role in [Role.SUPPLIER.value, Role.AUDITOR.value]:
+        if not current_user.facility_permissions:
+            return False
+        return facility_id in current_user.facility_permissions
+
+    # Internal Analysts with empty permissions have org-wide facility access
     if not current_user.facility_permissions:
-        return True  # If empty, has access to all org facilities
+        return True
     return facility_id in current_user.facility_permissions
+
+def require_facility_access(current_user: User, facility_id: str):
+    """Enforces facility-level security boundary, raising 403 if unauthorized."""
+    if not verify_facility_access(current_user, facility_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied: User '{current_user.email}' lacks permission for facility '{facility_id}'"
+        )
